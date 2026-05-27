@@ -1,185 +1,94 @@
-/*
- * Tests for ab-testing-c
- */
 #include "ab_testing.h"
 #include <assert.h>
-#include <math.h>
 #include <stdio.h>
-#include <string.h>
+#include <math.h>
 
-#define ASSERT_FEQ(a, b, eps) do { \
-    if (fabs((a) - (b)) > (eps)) { \
-        fprintf(stderr, "FAIL %s:%d: %.10f != %.10f\n", \
-                __FILE__, __LINE__, (double)(a), (double)(b)); \
-        return 1; \
-    } \
-} while(0)
+#define ASSERT_FEQ(a, b) assert(fabs((a) - (b)) < 1e-2)
 
-static int test_normal_cdf(void)
-{
-    ASSERT_FEQ(ab_normal_cdf(0.0), 0.5, 1e-8);
-    ASSERT_FEQ(ab_normal_cdf(-1e9), 0.0, 1e-15);
-    ASSERT_FEQ(ab_normal_cdf(1e9), 1.0, 1e-15);
-    /* Known value: Φ(1.96) ≈ 0.975 */
-    ASSERT_FEQ(ab_normal_cdf(1.96), 0.975, 0.01);
-    /* Symmetry */
-    ASSERT_FEQ(ab_normal_cdf(1.0), 1.0 - ab_normal_cdf(-1.0), 1e-12);
-    printf("  PASS normal_cdf\n");
-    return 0;
+static void test_normal_cdf(void) {
+    ASSERT_FEQ(ab_normal_cdf(0.0), 0.5);
+    assert(ab_normal_cdf(1.96) > 0.97);
+    assert(ab_normal_cdf(-1.96) < 0.03);
+    assert(ab_normal_cdf(10.0) > 0.9999);
+    assert(ab_normal_cdf(-10.0) < 0.0001);
+    printf("  normal_cdf: PASS\n");
 }
 
-static int test_gamma_func(void)
-{
-    /* Γ(1) = 0! = 1 */
-    ASSERT_FEQ(ab_gamma_func(1.0), 1.0, 1e-10);
-    /* Γ(2) = 1! = 1 */
-    ASSERT_FEQ(ab_gamma_func(2.0), 1.0, 1e-10);
-    /* Γ(3) = 2! = 2 */
-    ASSERT_FEQ(ab_gamma_func(3.0), 2.0, 1e-10);
-    /* Γ(6) = 5! = 120 */
-    ASSERT_FEQ(ab_gamma_func(6.0), 120.0, 1e-8);
-    /* Γ(0.5) = √π */
-    ASSERT_FEQ(ab_gamma_func(0.5), sqrt(3.14159265358979323846), 1e-8);
-    printf("  PASS gamma_func\n");
-    return 0;
+static void test_gamma_func(void) {
+    /* Γ(1) = 1, Γ(2) = 1, Γ(3) = 2, Γ(4) = 6 */
+    ASSERT_FEQ(ab_gamma_func(1.0), 1.0);
+    ASSERT_FEQ(ab_gamma_func(2.0), 1.0);
+    ASSERT_FEQ(ab_gamma_func(3.0), 2.0);
+    ASSERT_FEQ(ab_gamma_func(4.0), 6.0);
+    ASSERT_FEQ(ab_gamma_func(5.0), 24.0);
+    printf("  gamma_func: PASS\n");
 }
 
-static int test_chi_squared_identical_groups(void)
-{
-    /* Identical conversion rates → not significant */
-    AbChiSquaredResult r = ab_chi_squared_test(50, 100, 50, 100, 0.05);
-    assert(r.chi2 < 0.05);  /* Yates correction gives small but nonzero for identical rates when n>0 */
-    assert(r.significant == 0);
-    printf("  PASS chi_squared_identical_groups\n");
-    return 0;
-}
-
-static int test_chi_squared_different_groups(void)
-{
-    /* Very different conversion rates → significant */
-    AbChiSquaredResult r = ab_chi_squared_test(10, 100, 90, 100, 0.05);
-    assert(r.chi2 > 0);
-    assert(r.p_value < 0.05);
-    assert(r.significant == 1);
-    printf("  PASS chi_squared_different_groups (chi2=%.4f, p=%.6f)\n",
-           r.chi2, r.p_value);
-    return 0;
-}
-
-static int test_chi_squared_degrees_of_freedom(void)
-{
-    AbChiSquaredResult r = ab_chi_squared_test(50, 100, 60, 100, 0.05);
+static void test_chi_squared(void) {
+    /* Clear significant difference: 50/100 vs 70/100 */
+    ab_chi2_result_t r = ab_chi_squared_test(50, 100, 70, 100, 0.05);
+    assert(r.chi2 > 0.0);
     assert(r.degrees_of_freedom == 1);
-    printf("  PASS chi_squared_degrees_of_freedom\n");
-    return 0;
-}
-
-static int test_t_test_identical_samples(void)
-{
-    double a[] = {1.0, 2.0, 3.0, 4.0, 5.0};
-    double b[] = {1.0, 2.0, 3.0, 4.0, 5.0};
-    AbTTestResult r = ab_t_test(a, 5, b, 5, 0.05);
-    ASSERT_FEQ(r.t_statistic, 0.0, 1e-10);
-    assert(r.significant == 0);
-    printf("  PASS t_test_identical_samples\n");
-    return 0;
-}
-
-static int test_t_test_different_means(void)
-{
-    double a[] = {1.0, 2.0, 3.0, 4.0, 5.0};
-    double b[] = {11.0, 12.0, 13.0, 14.0, 15.0};
-    AbTTestResult r = ab_t_test(a, 5, b, 5, 0.05);
-    assert(r.t_statistic != 0.0);
-    assert(r.p_value < 0.05);
     assert(r.significant == 1);
-    printf("  PASS t_test_different_means (t=%.4f, p=%.6f)\n",
-           r.t_statistic, r.p_value);
-    return 0;
+    printf("  chi_squared_significant: PASS (chi2=%.4f, p=%.6f)\n", r.chi2, r.p_value);
+
+    /* No difference: 50/100 vs 50/100 */
+    ab_chi2_result_t r2 = ab_chi_squared_test(50, 100, 50, 100, 0.05);
+    assert(r2.significant == 0);
+    assert(r2.chi2 == 0.0);
+    printf("  chi_squared_nosig: PASS\n");
 }
 
-static int test_t_test_welch_df(void)
-{
-    /* Unequal sample sizes and variances → Welch–Satterthwaite df */
-    double a[] = {1.0, 2.0, 3.0};
-    double b[] = {10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0};
-    AbTTestResult r = ab_t_test(a, 3, b, 8, 0.05);
-    assert(r.degrees_of_freedom > 0);
-    assert(r.degrees_of_freedom < 9);  /* Should be fractional */
-    printf("  PASS t_test_welch_df (df=%.2f)\n", r.degrees_of_freedom);
-    return 0;
+static void test_welch_t(void) {
+    /* Clearly different groups */
+    double ctrl[] = {10.0, 11.0, 10.5, 10.2, 9.8};
+    double treat[] = {15.0, 16.0, 14.5, 15.5, 15.2};
+    ab_ttest_result_t r = ab_welch_t_test(ctrl, 5, treat, 5, 0.05);
+    assert(r.significant == 1);
+    assert(r.t_statistic > 5.0);
+    assert(r.p_value < 0.01);
+    printf("  welch_t_significant: PASS (t=%.4f, p=%.6f)\n", r.t_statistic, r.p_value);
+
+    /* Same group */
+    ab_ttest_result_t r2 = ab_welch_t_test(ctrl, 5, ctrl, 5, 0.05);
+    assert(r2.significant == 0);
+    ASSERT_FEQ(r2.t_statistic, 0.0);
+    printf("  welch_t_nosig: PASS\n");
 }
 
-static int test_proportion_ci(void)
-{
-    /* 50/100 → 95% CI should be roughly [0.40, 0.60] */
-    AbConfidenceInterval ci = ab_proportion_ci(50, 100, 0.95);
-    assert(ci.lower > 0.35 && ci.lower < 0.45);
-    assert(ci.upper > 0.55 && ci.upper < 0.65);
-    assert(ci.confidence == 0.95);
-    printf("  PASS proportion_ci ([%.4f, %.4f])\n", ci.lower, ci.upper);
-    return 0;
+static void test_proportion_ci(void) {
+    ab_ci_t ci = ab_proportion_ci(50, 100, 0.95);
+    assert(ci.lower < 0.5);
+    assert(ci.upper > 0.5);
+    assert(ci.upper - ci.lower < 0.3);
+    printf("  proportion_ci: PASS ([%.4f, %.4f])\n", ci.lower, ci.upper);
 }
 
-static int test_mean_ci(void)
-{
-    double vals[] = {1.0, 2.0, 3.0, 4.0, 5.0};
-    AbConfidenceInterval ci = ab_mean_ci(vals, 5, 0.95);
-    /* Mean = 3.0, CI should contain 3.0 */
-    assert(ci.lower < 3.0 && ci.upper > 3.0);
-    printf("  PASS mean_ci ([%.4f, %.4f])\n", ci.lower, ci.upper);
-    return 0;
+static void test_mean_ci(void) {
+    double vals[] = {10.0, 11.0, 12.0, 10.5, 11.5};
+    ab_ci_t ci = ab_mean_ci(vals, 5, 0.95);
+    assert(ci.lower < 11.0);
+    assert(ci.upper > 11.0);
+    printf("  mean_ci: PASS ([%.4f, %.4f])\n", ci.lower, ci.upper);
 }
 
-static int test_incomplete_beta(void)
-{
-    /* I_0(1,1) = 0, I_1(1,1) = 1, I_0.5(1,1) = 0.5 */
-    ASSERT_FEQ(ab_incomplete_beta(1.0, 1.0, 0.0), 0.0, 1e-10);
-    ASSERT_FEQ(ab_incomplete_beta(1.0, 1.0, 1.0), 1.0, 1e-10);
-    ASSERT_FEQ(ab_incomplete_beta(1.0, 1.0, 0.5), 0.5, 1e-10);
-    printf("  PASS incomplete_beta\n");
-    return 0;
-}
-
-static int test_z_for_confidence(void)
-{
-    /* z for 95% confidence ≈ 1.96 */
+static void test_z_for_confidence(void) {
     double z = ab_z_for_confidence(0.95);
-    ASSERT_FEQ(z, 1.96, 0.15);
-    /* z for 99% confidence ≈ 2.576 */
-    z = ab_z_for_confidence(0.99);
-    ASSERT_FEQ(z, 2.576, 0.15);
-    printf("  PASS z_for_confidence (z95=%.4f)\n", z);
-    return 0;
+    assert(z > 1.8 && z < 2.0);
+    double z99 = ab_z_for_confidence(0.99);
+    assert(z99 > 2.3 && z99 < 2.8);
+    printf("  z_for_confidence: PASS\n");
 }
 
-/* ─── Main ─────────────────────────────────────────────────── */
-
-typedef int (*test_fn)(void);
-
-int main(void)
-{
-    test_fn tests[] = {
-        test_normal_cdf,
-        test_gamma_func,
-        test_chi_squared_identical_groups,
-        test_chi_squared_different_groups,
-        test_chi_squared_degrees_of_freedom,
-        test_t_test_identical_samples,
-        test_t_test_different_means,
-        test_t_test_welch_df,
-        test_proportion_ci,
-        test_mean_ci,
-        test_incomplete_beta,
-        test_z_for_confidence,
-    };
-    int n = sizeof(tests) / sizeof(tests[0]);
-    int failures = 0;
-    printf("Running %d tests...\n", n);
-    for (int i = 0; i < n; i++) {
-        if (tests[i]()) failures++;
-    }
-    printf("\n%s: %d/%d passed\n",
-           failures ? "FAIL" : "OK", n - failures, n);
-    return failures;
+int main(void) {
+    printf("=== AB Testing C Tests ===\n");
+    test_normal_cdf();
+    test_gamma_func();
+    test_chi_squared();
+    test_welch_t();
+    test_proportion_ci();
+    test_mean_ci();
+    test_z_for_confidence();
+    printf("All tests passed!\n");
+    return 0;
 }

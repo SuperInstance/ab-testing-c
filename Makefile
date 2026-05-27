@@ -1,27 +1,26 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -O2
-AR = ar
-
+CFLAGS = -Wall -Wextra -std=c99 -O2 -Iinclude
 SRC = src/ab_testing.c
-OBJ = $(SRC:.c=.o)
-LIB = libab_testing.a
-HDR = include/ab_testing.h
+LIB = libabtesting.a
 
 .PHONY: all lib test clean
 
 all: lib
 
+build:
+	mkdir -p build
+
 lib: $(LIB)
 
-$(LIB): $(OBJ)
-	$(AR) rcs $@ $^
+$(LIB): $(SRC) include/ab_testing.h | build
+	$(CC) $(CFLAGS) -c $(SRC) -o build/ab_testing.o -lm
+	ar rcs $@ build/ab_testing.o
 
-src/%.o: src/%.c $(HDR)
-	$(CC) $(CFLAGS) -Iinclude -c -o $@ $<
+test: test_runner
+	./test_runner
 
-test: $(LIB) tests/test_ab_testing.c $(HDR)
-	$(CC) $(CFLAGS) -Iinclude -o test_ab_testing tests/test_ab_testing.c $(LIB) -lm
-	./test_ab_testing
+test_runner: tests/test_ab_testing.c $(LIB) include/ab_testing.h
+	$(CC) $(CFLAGS) tests/test_ab_testing.c -L. -labtesting -lm -o test_runner
 
 clean:
-	rm -f src/*.o $(LIB) test_ab_testing
+	rm -f $(LIB) test_runner build/*.o
