@@ -1,27 +1,80 @@
+#define _POSIX_C_SOURCE 199309L
 #include "ab_testing.h"
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ── Utility: sample mean ──────────────────────────────────────────── */
 
 double sample_mean(const double *data, int n) {
-    if (n <= 0) return 0.0;
+    if (n <= 0 || !data) return 0.0;
     double sum = 0.0;
     for (int i = 0; i < n; i++) sum += data[i];
     return sum / n;
 }
 
-/* ── Utility: sample std dev (Bessel-corrected) ────────────────────── */
+/* ── Utility: sample variance ──────────────────────────────────────── */
 
-double sample_std(const double *data, int n) {
-    if (n <= 1) return 0.0;
+double sample_variance(const double *data, int n) {
+    if (n <= 1 || !data) return 0.0;
     double mean = sample_mean(data, n);
     double ss = 0.0;
     for (int i = 0; i < n; i++) {
         double d = data[i] - mean;
         ss += d * d;
     }
-    return sqrt(ss / (n - 1));
+    return ss / (n - 1);
+}
+
+/* ── Utility: sample std dev (Bessel-corrected) ────────────────────── */
+
+double sample_std(const double *data, int n) {
+    return sqrt(sample_variance(data, n));
+}
+
+/* ── Utility: sample median ────────────────────────────────────────── */
+
+static int dbl_cmp(const void *a, const void *b) {
+    double da = *(const double *)a;
+    double db = *(const double *)b;
+    if (da < db) return -1;
+    if (da > db) return 1;
+    return 0;
+}
+
+double sample_median(const double *data, int n) {
+    if (n <= 0 || !data) return 0.0;
+    double *sorted = (double *)malloc((size_t)n * sizeof(double));
+    memcpy(sorted, data, (size_t)n * sizeof(double));
+    qsort(sorted, (size_t)n, sizeof(double), dbl_cmp);
+    double med = (n % 2 == 0)
+        ? (sorted[n/2 - 1] + sorted[n/2]) / 2.0
+        : sorted[n/2];
+    free(sorted);
+    return med;
+}
+
+/* ── Utility: min/max ──────────────────────────────────────────────── */
+
+double sample_min(const double *data, int n) {
+    if (n <= 0 || !data) return 0.0;
+    double m = data[0];
+    for (int i = 1; i < n; i++) if (data[i] < m) m = data[i];
+    return m;
+}
+
+double sample_max(const double *data, int n) {
+    if (n <= 0 || !data) return 0.0;
+    double m = data[0];
+    for (int i = 1; i < n; i++) if (data[i] > m) m = data[i];
+    return m;
+}
+
+/* ── Utility: standard error ───────────────────────────────────────── */
+
+double standard_error(const double *data, int n) {
+    if (n <= 0 || !data) return 0.0;
+    return sample_std(data, n) / sqrt((double)n);
 }
 
 /* ── Gamma function (Lanczos approximation, g=7) ──────────────────── */
@@ -80,6 +133,12 @@ double normal_cdf(double x) {
     return 0.5 * (1.0 + erf_approx(x / sqrt(2.0)));
 }
 
+/* ── Normal PDF ──────────────────────────────────────────────────────── */
+
+double normal_pdf(double x) {
+    return exp(-x * x / 2.0) / sqrt(2.0 * 3.14159265358979323846);
+}
+
 /* ── t-distribution CDF (approximation) ─────────────────────────────── */
 
 double t_cdf(double t_val, double df) {
@@ -90,12 +149,26 @@ double t_cdf(double t_val, double df) {
     return normal_cdf(z);
 }
 
+/* ── Cohen's d ──────────────────────────────────────────────────────── */
+
+double cohens_d(const double *s1, int n1, const double *s2, int n2) {
+    if (n1 <= 0 || n2 <= 0 || !s1 || !s2) return 0.0;
+    double m1 = sample_mean(s1, n1);
+    double m2 = sample_mean(s2, n2);
+    double v1 = sample_variance(s1, n1);
+    double v2 = sample_variance(s2, n2);
+    /* Pooled std */
+    double pooled = sqrt(((n1 - 1) * v1 + (n2 - 1) * v2) / (double)(n1 + n2 - 2));
+    if (pooled <= 0.0) return 0.0;
+    return (m1 - m2) / pooled;
+}
+
 /* ── Chi-squared test (2x2 contingency table) ──────────────────────── */
 
 TestResult chi_squared_test(int a, int b, int n1, int n2) {
-    TestResult result = {0};
+    TestResult result = {0, 0, 0, 0};
     int total = n1 + n2;
-    if (total == 0) return result;
+    if (total == 0 || n1 == 0 || n2 == 0) return result;
 
     double p1 = (double)a / n1;
     double p2 = (double)b / n2;
@@ -115,6 +188,7 @@ TestResult chi_squared_test(int a, int b, int n1, int n2) {
     result.df = 1.0;
 
     double gamma_val = gamma_func(result.df / 2.0);
+    if (gamma_val == 0.0) return result;
     double lower_gamma = incomplete_gamma(result.df / 2.0, result.statistic / 2.0);
     double cdf = lower_gamma / gamma_val;
     result.p_value = 1.0 - cdf;
@@ -128,16 +202,13 @@ TestResult chi_squared_test(int a, int b, int n1, int n2) {
 /* ── Welch's t-test ──────────────────────────────────────────────────── */
 
 TestResult welch_t_test(const double *s1, int n1, const double *s2, int n2) {
-    TestResult result = {0};
-    if (n1 < 2 || n2 < 2) return result;
+    TestResult result = {0, 0, 0, 0};
+    if (n1 < 2 || n2 < 2 || !s1 || !s2) return result;
 
     double m1 = sample_mean(s1, n1);
     double m2 = sample_mean(s2, n2);
-    double v1 = 0.0, v2 = 0.0;
-    for (int i = 0; i < n1; i++) { double d = s1[i] - m1; v1 += d * d; }
-    for (int i = 0; i < n2; i++) { double d = s2[i] - m2; v2 += d * d; }
-    v1 /= (n1 - 1);
-    v2 /= (n2 - 1);
+    double v1 = sample_variance(s1, n1);
+    double v2 = sample_variance(s2, n2);
 
     double se = sqrt(v1 / n1 + v2 / n2);
     if (se == 0.0) {
@@ -166,8 +237,8 @@ TestResult welch_t_test(const double *s1, int n1, const double *s2, int n2) {
 /* ── Confidence Intervals ───────────────────────────────────────────── */
 
 ConfidenceInterval proportion_ci(int successes, int n, double confidence) {
-    ConfidenceInterval ci = {0};
-    if (n == 0) return ci;
+    ConfidenceInterval ci = {0, 0, 0, 0};
+    if (n <= 0) return ci;
     double p = (double)successes / n;
     double alpha = 1.0 - confidence;
     double z = 1.96;
@@ -178,20 +249,54 @@ ConfidenceInterval proportion_ci(int successes, int n, double confidence) {
     ci.lower = p - z * se;
     ci.upper = p + z * se;
     ci.confidence = confidence;
+    if (ci.lower < 0.0) ci.lower = 0.0;
+    if (ci.upper > 1.0) ci.upper = 1.0;
     return ci;
 }
 
 ConfidenceInterval mean_ci(const double *sample, int n, double confidence) {
-    ConfidenceInterval ci = {0};
-    if (n < 2) return ci;
+    ConfidenceInterval ci = {0, 0, 0, 0};
+    if (n < 2 || !sample) return ci;
     double m = sample_mean(sample, n);
     double s = sample_std(sample, n);
-    double se = s / sqrt((double)n);
+    double se_val = s / sqrt((double)n);
     double t_crit = 1.96;
     if (n < 30) t_crit = 2.0 + 2.0 / n;
     ci.mean = m;
-    ci.lower = m - t_crit * se;
-    ci.upper = m + t_crit * se;
+    ci.lower = m - t_crit * se_val;
+    ci.upper = m + t_crit * se_val;
     ci.confidence = confidence;
     return ci;
+}
+
+/* ── Benchmarks ─────────────────────────────────────────────────────── */
+
+double benchmark_welch_t(int n) {
+    double *a = (double *)malloc((size_t)n * sizeof(double));
+    double *b = (double *)malloc((size_t)n * sizeof(double));
+    for (int i = 0; i < n; i++) {
+        a[i] = (double)i * 0.1;
+        b[i] = (double)i * 0.1 + 1.0;
+    }
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int i = 0; i < 1000; i++) {
+        welch_t_test(a, n, b, n);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    free(b);
+    free(a);
+    return (double)(end.tv_sec - start.tv_sec) +
+           (double)(end.tv_nsec - start.tv_nsec) / 1e9;
+}
+
+double benchmark_chi_squared(int n) {
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int i = 0; i < n; i++) {
+        chi_squared_test(100 + i % 50, 120 + i % 30, 1000, 1000);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    return (double)(end.tv_sec - start.tv_sec) +
+           (double)(end.tv_nsec - start.tv_nsec) / 1e9;
 }
